@@ -11,14 +11,18 @@ import (
 	"github.com/toebes/go-client/onshape"
 )
 
+// folderStack is used to maintain a queue of folders to process
+// It is used as a LIFO stack so that we can end up doing an in-order traversal
 type folderStack struct {
 	queue *list.List
 }
 
+// Push puts an entry at the top of the stack
 func (c *folderStack) Push(value string) {
 	c.queue.PushFront(value)
 }
 
+// Pop removes the entry from the top of the stack
 func (c *folderStack) Pop() (val string, err error) {
 	val, err = c.Front()
 
@@ -29,6 +33,7 @@ func (c *folderStack) Pop() (val string, err error) {
 	return
 }
 
+// Front finds the first entry in the stack
 func (c *folderStack) Front() (string, error) {
 	if c.queue.Len() > 0 {
 		if val, ok := c.queue.Front().Value.(string); ok {
@@ -39,17 +44,18 @@ func (c *folderStack) Front() (string, error) {
 	return "", fmt.Errorf("Peep Error: Queue is empty")
 }
 
+// Size tells us how many entries there are
 func (c *folderStack) Size() int {
 	return c.queue.Len()
 }
 
+// isEmpty tells when there is nothing left on the stack
 func (c *folderStack) isEmpty() bool {
 	return c.queue.Len() == 0
 }
 
 // processFile Handles an Onshape document
-// https://cad.onshape.com/api/metadata/d/7508e0d58196a1ff1c86c951/w/3af033a2075cf9db20d26f84/e?configuration=default
-// GetWVMetadata(ctx, did, wv, wvid).Execute()
+//
 func processFile(ctx context.Context, client *onshape.APIClient, parentPath string, element onshape.BTGlobalTreeMagicNodeInfo) error {
 	var elementTypeName = map[int]string{
 		0: "Part Studio",
@@ -61,6 +67,8 @@ func processFile(ctx context.Context, client *onshape.APIClient, parentPath stri
 		6: "Table",
 		7: "BOM",
 	}
+	// Get the Document ID and default workspace because the APIs need them to access it.
+	// They are used both for generating the URL to access the document and the API for getting the Metadata
 	did, found := element.GetIdOk()
 	if !found {
 		return fmt.Errorf("unable to get default document id")
@@ -74,26 +82,33 @@ func processFile(ctx context.Context, client *onshape.APIClient, parentPath stri
 		return fmt.Errorf("unable to get default workspace id")
 	}
 
+	// Pull out the name of the document
 	documentName, hasName := element.GetNameOk()
 	if !hasName {
 		*documentName = "<UNNAMED>"
 	}
 
+	// Construct the URL to access the document
 	url := fmt.Sprintf("https://cad.onshape.com/documents/%v/w/%v", *did, *wvid)
+
+	// Log the document
 	fmt.Printf("+++%v`%v`%v\n", parentPath, *documentName, url)
 
+	// Get the Metadata for the document.  This returns the list of lower level tabs in the document
 	// fmt.Printf("Calling: /api/metadata/d/%v/w/%v/e\n", *did, *wvid)
 	MetadataNodes, rawResp, err := client.MetadataApi.GetWMVEsMetadata(ctx, *did, "w", *wvid).Execute()
 	if err != nil || (rawResp != nil && rawResp.StatusCode >= 300) {
 		fmt.Printf("err: %v  -- Response status: %v\n", err, rawResp)
 		return err
 	}
-	//
+	// Make sure we have some items to work with
 	items, hasItems := MetadataNodes.GetItemsOk()
 	if !hasItems {
 		return fmt.Errorf("no items found in document")
 	}
+	// Run through all of the tabs
 	for _, subelement := range *items {
+		// Figure out what type of tab it is
 		elementType, hasElementType := subelement.GetElementTypeOk()
 		if !hasElementType {
 			return fmt.Errorf("Document Metadata doesn't have an elementType")
@@ -102,6 +117,7 @@ func processFile(ctx context.Context, client *onshape.APIClient, parentPath stri
 		if !foundType {
 			tabType = "UNKNOWN"
 		}
+		// Gather the information that we are going to print out about the document
 		tabName := ""
 		tabExtra := ""
 		tabExtraSep := ""
@@ -109,13 +125,16 @@ func processFile(ctx context.Context, client *onshape.APIClient, parentPath stri
 		tabSKU := ""
 		tabVendor := ""
 
+		// Get the Properties which corresponds to the list of tabs in the document.
 		properties, hasProperties := subelement.GetPropertiesOk()
-		// fmt.Printf("Result:%v - %v\n", properties, hasProperties)
 		if !hasProperties {
 			fmt.Printf("###%v\n", subelement)
 			return fmt.Errorf("document Metadata item has no properties")
 		}
+		// Iterate over all the elements in the document.
 		for _, property := range *properties {
+			// This is where we have a bit of challenge with the API.  We have to determine the type
+			// of the property in order to access the correct polymorhpic structure of data
 			metadataType := property.BTMetadataItemsPropertiesInterface.GetValueType()
 			propName := "<NONAME>"
 			propValue := "<NOVALUE>"
