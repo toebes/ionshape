@@ -118,6 +118,8 @@ func GetConsolidatedProperties(metadata []onshape.BTMetadataItemsProperties) (Co
 				extradata = "CATEGORY:" + *name
 
 			}
+		case "COMPUTED":
+
 		case "DATE":
 			propIface := metadataItem.BTMetadataItemsPropertiesInterface.(*onshape.BTMetadataCommonDate)
 			name, hasName := propIface.GetNameOk()

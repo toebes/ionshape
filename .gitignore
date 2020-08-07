@@ -2,3 +2,6 @@ all.txt
 foo3.txt
 outofshape.exe
 .vscode/launch.json
+__debug_bin
+outofshape.code-workspace
+outofshape.txt

@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime"
 
 	"github.com/toebes/go-client/onshape"
 )
@@ -21,6 +22,20 @@ func (i *arrayFlags) Set(value string) error {
 	return nil
 }
 
+type workItem struct {
+	order      int
+	parentPath string
+	element    onshape.BTGlobalTreeMagicNodeInfo
+	finished   bool
+}
+type doneItem struct {
+	order    int
+	workerID int
+	result   fileInfo
+	err      error
+	finished bool
+}
+
 var (
 	// Command-line flags
 	folderIDs    arrayFlags
@@ -30,7 +45,20 @@ var (
 	filepat      string
 	dirpat       string
 	fixvendor    string
+	logfile      string
+	numWorkers   int
 )
+
+// MaxParallelism determines the maximum number of threads that it is reasonable to run
+// From: https://stackoverflow.com/questions/13234749/golang-how-to-verify-number-of-processors-on-which-a-go-program-is-running
+func MaxParallelism() int {
+	maxProcs := runtime.GOMAXPROCS(0)
+	numCPU := runtime.NumCPU()
+	if maxProcs < numCPU {
+		return maxProcs
+	}
+	return numCPU
+}
 
 func main() {
 	flag.BoolVar(&onshapeDebug, "debug", false, "enable Onshape API debugging")
@@ -39,8 +67,15 @@ func main() {
 	flag.StringVar(&fixvendor, "fixvendor", "", "Vendor name to update parts and assemblies with")
 	flag.StringVar(&apiSecretKey, "secret", "", "Onshape API Secret key")
 	flag.StringVar(&apiAccessKey, "access", "", "Onshape API Access key")
+	flag.StringVar(&logfile, "logfile", "outofshape.txt", "Log file to write generated names to")
+	flag.IntVar(&numWorkers, "threads", MaxParallelism()-2, "Maximum number of worker threads")
 	flag.Var(&folderIDs, "fid", "folder id(s) to include in scan")
 	flag.Parse()
+
+	// Queue globals
+	workQueue := make(chan workItem, numWorkers*10)
+	doneQueue := make(chan doneItem, numWorkers*10)
+	allDone := make(chan bool, 1)
 
 	config := onshape.NewConfiguration()
 	config.Debug = onshapeDebug
@@ -58,5 +93,21 @@ func main() {
 
 	ctx := context.WithValue(context.Background(), onshape.ContextAPIKeys, onshape.APIKeys{SecretKey: apiSecretKey, AccessKey: apiAccessKey})
 
-	processFolders(ctx, client)
+	go outputThread(numWorkers, logfile, doneQueue, allDone)
+	for i := 0; i < numWorkers; i++ {
+		go fileThread(ctx, client, i, workQueue, doneQueue)
+	}
+
+	processed, err := processFolders(ctx, client, workQueue, doneQueue)
+	if err != nil {
+		fmt.Printf("***Folder Processing error: %v\n", err)
+	}
+
+	for i := 0; i < numWorkers; i++ {
+		workQueue <- workItem{order: processed + 1, parentPath: "done", finished: true}
+	}
+
+	<-allDone
+
+	fmt.Printf("All done")
 }

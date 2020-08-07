@@ -11,7 +11,26 @@
             "mode": "auto",
             "program": "${fileDirname}",
             "env": {},
-            "args": []
+            "args": [
+                // "-debug",
+                "-threads",
+                "1",
+                "-fid",
+                "48a978a483c271ee5465233b", // Debugging
+                // "744735e9a1479026539605ae", // GoBilda
+                //     "-fid",
+                //     "dfe0ed192594de895d886ae3", // AndyMark
+                //     "-fid",
+                //     "94c291c1eedd1f2c6a179d7c", // Other Robot Vendors
+                //     "-fid",
+                //     "2acc0cb4a6af86c9ed045305", // Modern Robotics
+                //     "-fid",
+                //     "739045f620560df001827ea2", // Pitsco
+                //     "-fid",
+                //     "4ef7ea19cd1accf2424a8b40", // Rev Robotics
+                //     "-fid",
+                //     "4e8628e24c7fb6ed3907920a" // Servo City
+            ]
         }
     ]
 }
