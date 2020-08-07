@@ -253,6 +253,10 @@ func processFile(ctx context.Context, client *onshape.APIClient, parentPath stri
 		}
 		switch tabType {
 		case "Part Studio":
+			eid, hasEid := subelement.GetElementIdOk()
+			if !hasEid {
+				result.AddCheck("Element ID is missing")
+			}
 			parts, hasParts := subelement.GetPartsOk()
 			// For a part studio, either the name is something like "parts" or it is the same name as the document
 			// If it is the same name as the document, there should be a single part and it should contain the information
@@ -276,8 +280,13 @@ func processFile(ctx context.Context, client *onshape.APIClient, parentPath stri
 							result.AddCheck("Part Studio has more than one item")
 						}
 						for _, part := range *partsItems {
+							pid, hasPid := part.GetPartIdOk()
+							if !hasPid {
+								result.AddCheck("Part ID is missing")
+							}
 							parttype, hasPartType := part.GetPartTypeOk()
 							partProps, hasPartProps := part.GetPropertiesOk()
+							href, hasHref := part.GetHrefOk()
 							if hasPartType && *parttype == "solid" && hasPartProps {
 								partConsolidated, err := GetConsolidatedProperties(*partProps)
 								if err != nil {
@@ -287,6 +296,15 @@ func processFile(ctx context.Context, client *onshape.APIClient, parentPath stri
 								result.VendorURL.set(partConsolidated.Description, "PartDescription")
 								result.SKU.set(partConsolidated.SKU, "PartSku")
 								result.Vendor.set(partConsolidated.Vendor, "PartSku")
+
+								// See if we need to fix the Vendor in this case
+								if strings.EqualFold(partConsolidated.Vendor, fixvendor) && partConsolidated.Vendor != fixvendor && hasHref {
+									err := SetPartMetadata(ctx, client, *did, "w", *wvid, *eid, *pid, *href, *partProps, "Vendor", fixvendor)
+									if err != nil {
+										return result, err
+									}
+								}
+
 								if partConsolidated.ExcludeFromBOM {
 									result.AddCheck("Main part is excluded from BOM")
 								}
@@ -345,6 +363,16 @@ func processFile(ctx context.Context, client *onshape.APIClient, parentPath stri
 				result.SKU.set(consolidated.SKU, "AssemblyPart#")
 				result.VendorURL.set(consolidated.Description, "AssemblyDesc")
 				result.Vendor.set(consolidated.Vendor, "Assembly")
+				// See if we need to fix the Vendor in this case
+				if strings.EqualFold(consolidated.Vendor, fixvendor) && consolidated.Vendor != fixvendor {
+					href, hasHref := subelement.GetHrefOk()
+					if hasHref {
+						err := SetMetadata(ctx, client, *did, "w", *wvid, *href, *properties, "Vendor", fixvendor)
+						if err != nil {
+							return result, err
+						}
+					}
+				}
 				foundPiece = true
 			} else {
 				// The name doesn't match, so just note it in the checks

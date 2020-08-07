@@ -13,10 +13,12 @@
             "env": {},
             "args": [
                 // "-debug",
+                "-fixvendor",
+                "goBILDA",
                 "-threads",
                 "1",
                 "-fid",
-                "48a978a483c271ee5465233b", // Debugging
+                "23faa2c16be9a86597b7347f" // Debugging
                 // "744735e9a1479026539605ae", // GoBilda
                 //     "-fid",
                 //     "dfe0ed192594de895d886ae3", // AndyMark
