@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/toebes/go-client/onshape"
 )
@@ -22,11 +24,12 @@ type fileInfo struct {
 }
 
 // AddCheck appands to the checks string
-func (f fileInfo) AddCheck(format string, parms ...interface{}) {
+func (f *fileInfo) AddCheck(format string, parms ...interface{}) {
+	msg := fmt.Sprintf(format, parms...)
 	if f.Checks == "" {
-		f.Checks = fmt.Sprintf(format, parms...)
+		f.Checks = msg
 	} else {
-		f.Checks = ", " + fmt.Sprintf(format, parms...)
+		f.Checks += ", " + msg
 	}
 }
 
@@ -147,6 +150,9 @@ func fileThread(ctx context.Context, client *onshape.APIClient, workerID int, wo
 		}
 		// Somethign to do! Let the processFile routine do all the work to gather our result
 		result, err := processFile(ctx, client, request.parentPath, request.element)
+		if err != nil {
+			fmt.Printf("===ERROR (%v):%v/%v\n", err, result.Name, result.SKU)
+		}
 		output := doneItem{order: request.order, workerID: workerID, err: err, result: result, finished: false}
 		doneQueue <- output
 	}
@@ -199,12 +205,38 @@ func processFile(ctx context.Context, client *onshape.APIClient, parentPath stri
 		// In the most likely scenario, the document name SHOULD be the first part of the description followed by a carriage return and then the product URL
 		pieces := strings.Split(*description, "\n")
 		if len(pieces) != 2 {
-			result.AddCheck(" Description doesn't have a single carriage return '%v'", strings.ReplaceAll(*description, "\n", "\\n"))
+			if !strings.Contains(*description, "[OBSOLETE]") && !strings.Contains(*description, "[DISCONTINUED]") {
+				result.AddCheck(" Description doesn't have a single carriage return '%v'", strings.ReplaceAll(*description, "\n", "\\n"))
+			}
 		} else {
 			if strings.EqualFold(pieces[0], *documentName) {
 				result.VendorURL.set(pieces[1], "Main_Description")
 			} else {
-				result.AddCheck(" Description '%v' does not match main name", pieces[0])
+				// Ok the description doesn't match, see if we can fix it automatically
+				// "- 2 Pack"
+				// "- 25 Pack "
+				// "- 4 Pack"
+				// "- 4 Pack "
+				// "2 Pack"
+				fixes := []string{"- 2 Pack", "- 25 Pack ", "- 4 Pack", "- 4 Pack ", "2 Pack", "2 Pack ", "- 2 Pack "}
+				fixed := false
+				for _, fix := range fixes {
+					try := strings.Replace(pieces[0], fix, "", -1)
+					if strings.EqualFold(try, *documentName) {
+						err := OnshapeSetDocumentDescription(ctx, client, *did, *documentName+"\n"+pieces[1])
+						if err != nil {
+							fmt.Printf("OnshapeSetDocumentDescription error\n")
+							return result, err
+						}
+						fixed = true
+						break
+					}
+				}
+				if !fixed {
+					if !strings.Contains(*documentName, "(Configurable)") {
+						result.AddCheck(" Description '%v' does not match main name", pieces[0])
+					}
+				}
 			}
 		}
 	}
@@ -215,8 +247,21 @@ func processFile(ctx context.Context, client *onshape.APIClient, parentPath stri
 
 	// Get the Metadata for the document.  This returns the list of lower level tabs in the document
 	// fmt.Printf("Calling: /api/metadata/d/%v/w/%v/e\n", *did, *wvid)
-	MetadataNodes, rawResp, err := client.MetadataApi.GetWMVEsMetadata(ctx, *did, "w", *wvid).Depth("5").Execute()
+
+	var MetadataNodes onshape.BTMetadataInfo
+	var rawResp *http.Response
+	var err error
+	for delay := 0; delay < 50; delay++ {
+		MetadataNodes, rawResp, err = client.MetadataApi.GetWMVEsMetadata(ctx, *did, "w", *wvid).Depth("5").Execute()
+		// If we are rate limited, implement a backoff strategy
+		if err == nil || err.Error() != "429 " {
+			break
+		}
+		fmt.Printf(".......Rate Limited.. Sleeping\n")
+		time.Sleep(time.Duration(delay*50) * time.Millisecond)
+	}
 	if err != nil {
+		fmt.Printf("GetWMVEsMetadata error: %v getting %v/w/%v\n", err.Error(), *did, *wvid)
 		return result, err
 	} else if rawResp != nil && rawResp.StatusCode >= 300 {
 		err = fmt.Errorf("err: Response status: %v", rawResp)
@@ -316,7 +361,9 @@ func processFile(ctx context.Context, client *onshape.APIClient, parentPath stri
 				}
 			} else {
 				// Not the main part, so check the name to see if it is something we like
-				if !strings.EqualFold(consolidated.Name, "PARTS") && !strings.EqualFold(consolidated.Name, "PARTS DO NOT USE") {
+				if !strings.EqualFold(consolidated.Name, "PARTS") &&
+					!strings.EqualFold(consolidated.Name, "PARTS DO NOT USE") &&
+					!strings.EqualFold(consolidated.Name, "DO NOT USE PARTS") {
 					result.AddCheck("Bad Part Studio:\"%v\"", consolidated.Name)
 				}
 				if hasParts {
@@ -339,7 +386,8 @@ func processFile(ctx context.Context, client *onshape.APIClient, parentPath stri
 									}
 									reportedExclude = true
 								}
-								if strings.EqualFold(partConsolidated.Name, "DO NOT USE PARTS") {
+								if strings.EqualFold(partConsolidated.Name, "DO NOT USE PARTS") ||
+									strings.EqualFold(partConsolidated.Name, "DO NOT USE THESE PARTS") {
 									foundDoNotUse = true
 								}
 							}
@@ -369,6 +417,7 @@ func processFile(ctx context.Context, client *onshape.APIClient, parentPath stri
 					if hasHref {
 						err := SetMetadata(ctx, client, *did, "w", *wvid, *href, *properties, "Vendor", fixvendor)
 						if err != nil {
+							fmt.Printf("SetMetadata Assembly error\n")
 							return result, err
 						}
 					}
