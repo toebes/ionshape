@@ -127,6 +127,23 @@ func outputThread(numWorkers int, logfile string, doneQueue chan doneItem, allDo
 	allDone <- true
 }
 
+func canFixName(testname string, basename string) bool {
+	// Ok the description doesn't match, see if we can fix it automatically
+	// "- 2 Pack"
+	// "- 25 Pack "
+	// "- 4 Pack"
+	// "- 4 Pack "
+	// "2 Pack"
+	fixes := []string{"- 2 Pack", "- 25 Pack ", "- 4 Pack", "- 4 Pack ", "2 Pack", "2 Pack ", "- 2 Pack "}
+	for _, fix := range fixes {
+		try := strings.Replace(testname, fix, "", -1)
+		if strings.EqualFold(try, basename) {
+			return true
+		}
+	}
+	return false
+}
+
 // queueFile puts a work item on the queue to be processed by one of the fileThreads
 func queueFile(workQueue chan workItem, order int, parentPath string, element onshape.BTGlobalTreeMagicNodeInfo) error {
 	workQueue <- workItem{order: order, parentPath: parentPath, element: element, finished: false}
@@ -212,27 +229,12 @@ func processFile(ctx context.Context, client *onshape.APIClient, parentPath stri
 			if strings.EqualFold(pieces[0], *documentName) {
 				result.VendorURL.set(pieces[1], "Main_Description")
 			} else {
-				// Ok the description doesn't match, see if we can fix it automatically
-				// "- 2 Pack"
-				// "- 25 Pack "
-				// "- 4 Pack"
-				// "- 4 Pack "
-				// "2 Pack"
-				fixes := []string{"- 2 Pack", "- 25 Pack ", "- 4 Pack", "- 4 Pack ", "2 Pack", "2 Pack ", "- 2 Pack "}
-				fixed := false
-				for _, fix := range fixes {
-					try := strings.Replace(pieces[0], fix, "", -1)
-					if strings.EqualFold(try, *documentName) {
-						err := OnshapeSetDocumentDescription(ctx, client, *did, *documentName+"\n"+pieces[1])
-						if err != nil {
-							fmt.Printf("OnshapeSetDocumentDescription error\n")
-							return result, err
-						}
-						fixed = true
-						break
+				if canFixName(pieces[0], *documentName) {
+					err := OnshapeSetDocumentDescription(ctx, client, *did, *documentName+"\n"+pieces[1])
+					if err != nil {
+						return result, err
 					}
-				}
-				if !fixed {
+				} else {
 					if !strings.Contains(*documentName, "(Configurable)") {
 						result.AddCheck(" Description '%v' does not match main name", pieces[0])
 					}
@@ -303,13 +305,18 @@ func processFile(ctx context.Context, client *onshape.APIClient, parentPath stri
 				result.AddCheck("Element ID is missing")
 			}
 			parts, hasParts := subelement.GetPartsOk()
+			if !strings.EqualFold(*documentName, consolidated.Name) &&
+				canFixName(consolidated.Name, *documentName) {
+				// We have to rename the part studio to be the proper name
+				consolidated.Name = *documentName
+			}
 			// For a part studio, either the name is something like "parts" or it is the same name as the document
 			// If it is the same name as the document, there should be a single part and it should contain the information
 			//    about the vendor, not be excluded from BOM
 			// if it is not the same name as the document, it should be named PARTS, PARTS DO NOT USE or some such nonesense.
 			//    For a part, we want to navigate the individual parts and print out the part information.  It should contain
 			//    a derived part called "DO NOT USE PARTS" and all of the parts should have the EXCLUDE FROM BOM flag set.
-			if *documentName == consolidated.Name {
+			if strings.EqualFold(*documentName, consolidated.Name) {
 				if foundPiece {
 					result.AddCheck("Extra Main Part Studio")
 				}
@@ -363,6 +370,7 @@ func processFile(ctx context.Context, client *onshape.APIClient, parentPath stri
 				// Not the main part, so check the name to see if it is something we like
 				if !strings.EqualFold(consolidated.Name, "PARTS") &&
 					!strings.EqualFold(consolidated.Name, "PARTS DO NOT USE") &&
+					!strings.EqualFold(consolidated.Name, "PARTS - DO NOT USE") &&
 					!strings.EqualFold(consolidated.Name, "DO NOT USE PARTS") {
 					result.AddCheck("Bad Part Studio:\"%v\"", consolidated.Name)
 				}
@@ -380,6 +388,7 @@ func processFile(ctx context.Context, client *onshape.APIClient, parentPath stri
 								if err != nil {
 									return result, err
 								}
+
 								if !partConsolidated.ExcludeFromBOM {
 									if !reportedExclude {
 										result.AddCheck("Part not excluded from BOM:\"%v\"", partConsolidated.Name)
@@ -404,8 +413,11 @@ func processFile(ctx context.Context, client *onshape.APIClient, parentPath stri
 
 		case "Assembly":
 			// For a legacy assembly we can simply ignore it.
-			if strings.Contains(strings.ToUpper(consolidated.Name), "LEGACY") {
-				result.AddCheck(" LegacyAsm:\"%v\"", consolidated.Name)
+			if strings.Contains(strings.ToUpper(consolidated.Name), "LEGACY") ||
+				strings.Contains(strings.ToUpper(consolidated.Name), "DO NOT USE") ||
+				strings.Contains(strings.ToUpper(consolidated.Name), "OBSOLETE") ||
+				strings.Contains(strings.ToUpper(consolidated.Name), "OLD ASSEMBLY:") {
+				// result.AddCheck(" LegacyAsm:\"%v\"", consolidated.Name)
 			} else if *documentName == consolidated.Name {
 				// This is the assembly intended for the part, so check the SKU, Vendor and Description
 				result.SKU.set(consolidated.SKU, "AssemblyPart#")
